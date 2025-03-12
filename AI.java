@@ -1,9 +1,5 @@
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.TreeMap;
-import java.util.TreeSet;
 
 /**
  * Class used to model the set of belief states already visited and to keep track of their values (in order to avoid visiting multiple times the same states)
@@ -95,7 +91,7 @@ class BeliefState implements Comparable<BeliefState>, Iterable<GameState>{
 		}
 		this.played = played;
 	}
-	
+
 	public void setStates(BeliefState beliefState) {
 		this.beliefState = beliefState.beliefState;
 		for(int i = 0; i < 6; i++) {
@@ -478,11 +474,250 @@ class BeliefState implements Comparable<BeliefState>, Iterable<GameState>{
 }
 
 public class AI{
-	
+	private static final int MAX_DEPTH = 3; // on peut mettre 4 pour gagner en précision, mais le temps de calcul est plus long 40,..
+
 	public AI() {
 	}
-	
+
 	public static int findNextMove(BeliefState game) {
-		return 0;
+
+		ArrayList<Integer> moves = game.getMoves();
+		if(moves.isEmpty()) {
+			// Pas de coup possible, on retourne 0 par défaut
+			return 0;
+		}
+
+		int bestMove = moves.get(0);
+		float bestValue = Float.NEGATIVE_INFINITY;
+
+		for (int move : moves) {
+			// Simule le coup du joueur
+			Results results = game.putPiecePlayer(move);
+
+			if (results == null) {
+				// Si ce n'est pas le tour du joueur ou autre condition, ignorer ce coup
+				continue;
+			}
+
+			// Évaluer le/les BeliefState résultant(s)
+			float value = evaluateResults(results, 1);
+			if (value > bestValue) {
+				bestValue = value;
+				bestMove = move;
+			}
+		}
+
+		return bestMove;
+	}
+
+	private static float evaluateResults(Results res, int depth) {
+		float totalValue = 0f;
+		float totalProba = 0f;
+		for (BeliefState bs : res) {
+			float p = bs.probaSum();
+			float val = evaluateBelieveState(bs, depth);
+			totalValue += val * p;
+			totalProba += p;
+		}
+
+		if (totalProba > 0) {
+			return totalValue / totalProba;
+		}
+		return 0f;
+	}
+
+	private static float evaluateBelieveState(BeliefState bs, int depth) {
+		if (depth >= MAX_DEPTH || bs.isGameOver()) {
+			return heuristic(bs);
+		}
+
+		if (bs.turn()) {
+			// Tour de l'adversaire => predict()
+			Results oppResults = bs.predict();
+			if (oppResults == null) {
+				return heuristic(bs);
+			}
+			return evaluateResults(oppResults, depth+1);
+		} else {
+			// Tour de l'IA
+			ArrayList<Integer> moves = bs.getMoves();
+			// Si aucun coup possible, on évalue l'état actuel
+			if (moves.isEmpty()) {
+				return heuristic(bs);
+			}
+
+			float bestValue = Float.NEGATIVE_INFINITY;
+			for (int move : moves) {
+
+				Results r = bs.putPiecePlayer(move);
+
+				if (r == null) {
+					continue;
+				}
+
+				float val = evaluateResults(r, depth+1);
+
+				if (val > bestValue) {
+					bestValue = val;
+				}
+			}
+			return bestValue;
+		}
+	}
+
+	private static float heuristic(BeliefState bs) {
+		float value = 0f;
+		float sumProba = 0f;
+
+		for (GameState state : bs) {
+			float p = state.proba();
+			value += improvedEvaluateGameState(state) * p;
+			sumProba += p;
+		}
+
+		if (sumProba > 0) {
+			return value / sumProba;
+		} else {
+			return 0f;
+		}
+	}
+
+	 //Fonction d'évaluation , On examine toutes les "fenêtres" de 4 cases et on attribue un score en fonction de la présence de pions rouges ou jaunes
+	private static float improvedEvaluateGameState(GameState state) {
+		if (state.isGameOver()) {
+			boolean redWon = hasPlayerWon(state, 2);
+			boolean yellowWon = hasPlayerWon(state, 1);
+			if (redWon && !yellowWon) {
+				return 10000f;
+			} else if (yellowWon && !redWon) {
+				return -10000f;
+			} else {
+				return 0f;
+			}
+		}
+
+		int score = 0;
+
+		// Petit bonus pour le centre
+		// Le centre est la colonne 3 (0-based : colonnes 0 à 6)
+		for (int row = 0; row < 6; row++) {
+			if (state.content(row, 3) == 2) {
+				score += 3; // +3 par pion rouge dans la colonne centrale
+			}
+		}
+
+		// Examiner toutes les fenêtres de 4 cases
+		ArrayList<int[]> windows = getAllWindows();
+		for (int[] w : windows) {
+			int rCount = 0; // pions rouges
+			int yCount = 0; // pions jaunes
+			for (int k = 0; k < 4; k++) {
+				int cellRow = w[k] / 7;
+				int cellCol = w[k] % 7;
+				int cellVal = state.content(cellRow, cellCol);
+				if (cellVal == 2) rCount++;
+				else if (cellVal == 1) yCount++;
+			}
+
+			// Si la fenêtre a des pions des deux joueurs, on ignore
+			if (rCount > 0 && yCount > 0) continue;
+
+			// Sinon, si que rouge
+			if (rCount > 0 && yCount == 0) {
+				switch(rCount) {
+					case 1: score += 1; break;
+					case 2: score += 10; break;
+					case 3: score += 50; break;
+					case 4: score += 10000; break;
+				}
+			}
+			// Sinon, si que jaune
+			else if (yCount > 0 && rCount == 0) {
+				switch(yCount) {
+					case 1: score -= 1; break;
+					case 2: score -= 10; break;
+					case 3: score -= 50; break;
+					case 4: score -= 10000; break;
+				}
+			}
+		}
+
+		return score;
+	}
+
+	private static boolean hasPlayerWon(GameState state, int player) {
+		for(int row=0; row<6; row++){
+			for(int col=0; col<7; col++){
+				// Horizontal
+				if(col+3<7 &&
+						state.content(row,col)==player &&
+						state.content(row,col+1)==player &&
+						state.content(row,col+2)==player &&
+						state.content(row,col+3)==player) return true;
+				// Vertical
+				if(row+3<6 &&
+						state.content(row,col)==player &&
+						state.content(row+1,col)==player &&
+						state.content(row+2,col)==player &&
+						state.content(row+3,col)==player) return true;
+				// Diag droite
+				if(row+3<6 && col+3<7 &&
+						state.content(row,col)==player &&
+						state.content(row+1,col+1)==player &&
+						state.content(row+2,col+2)==player &&
+						state.content(row+3,col+3)==player) return true;
+				// Diag gauche
+				if(row+3<6 && col-3>=0 &&
+						state.content(row,col)==player &&
+						state.content(row+1,col-1)==player &&
+						state.content(row+2,col-2)==player &&
+						state.content(row+3,col-3)==player) return true;
+			}
+		}
+		return false;
+	}
+
+	private static ArrayList<int[]> getAllWindows() {
+		ArrayList<int[]> windows = new ArrayList<>();
+
+		// Fenêtres horizontales
+		for (int row=0; row<6; row++) {
+			for (int col=0; col<7-3; col++) {
+				windows.add(new int[]{row*7+col, row*7+(col+1), row*7+(col+2), row*7+(col+3)});
+			}
+		}
+
+		// Fenêtres verticales
+		for (int col=0; col<7; col++) {
+			for (int row=0; row<6-3; row++) {
+				windows.add(new int[]{row*7+col, (row+1)*7+col, (row+2)*7+col, (row+3)*7+col});
+			}
+		}
+
+		// Diagonales montantes
+		for (int row=0; row<6-3; row++){
+			for (int col=0; col<7-3; col++){
+				windows.add(new int[]{
+						row*7+col,
+						(row+1)*7+(col+1),
+						(row+2)*7+(col+2),
+						(row+3)*7+(col+3)
+				});
+			}
+		}
+
+		// Diagonales descendantes
+		for (int row=3; row<6; row++){
+			for (int col=0; col<7-3; col++){
+				windows.add(new int[]{
+						row*7+col,
+						(row-1)*7+(col+1),
+						(row-2)*7+(col+2),
+						(row-3)*7+(col+3)
+				});
+			}
+		}
+
+		return windows;
 	}
 }
